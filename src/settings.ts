@@ -1,8 +1,4 @@
-import {
-    App,
-    PluginSettingTab,
-    Setting,
-} from 'obsidian';
+import { App, PluginSettingTab, Setting } from 'obsidian';
 
 import FolderNotePlugin from './main';
 
@@ -12,6 +8,7 @@ import FolderNotePlugin from './main';
 
 export interface FolderNotePluginSettings {
     folderNoteHide: boolean;
+    folderNoteHighlight: boolean;
     folderNoteType: string;
     folderNoteName: string;
     folderNoteKey: string;
@@ -22,13 +19,14 @@ export interface FolderNotePluginSettings {
 
 export const FOLDER_NOTE_DEFAULT_SETTINGS: FolderNotePluginSettings = {
     folderNoteHide: true,
+    folderNoteHighlight: true,
     folderNoteType: 'inside',
     folderNoteName: '_about_',
     folderNoteKey: 'ctrl',
     folderNoteAutoRename: true,
     folderDelete2Note: false,
-    folderNoteStrInit: '# {{FOLDER_NAME}} Overview\n {{FOLDER_BRIEF_LIVE}} \n'
-}
+    folderNoteStrInit: '# {{FOLDER_NAME}} Overview\n {{FOLDER_BRIEF_LIVE}} \n',
+};
 
 // ------------------------------------------------------------
 // Settings Tab
@@ -43,74 +41,69 @@ export class FolderNoteSettingTab extends PluginSettingTab {
     }
 
     display(): void {
-        let { containerEl } = this;
-
+        const { containerEl } = this;
         containerEl.empty();
-        containerEl.createEl('h2', { text: 'Folder Note Plugin: Settings.' });
 
         new Setting(containerEl)
-            .setName('Note File Method')
-            .setDesc('Select the method to put your folder note file. (Read doc for more information.)')
-            .addDropdown(dropDown =>
+            .setName('Note file method')
+            .setDesc('Where the folder note lives. See the plugin docs for the trade-offs.')
+            .addDropdown((dropDown) =>
                 dropDown
-                .addOption('index', 'Index File')
-                .addOption('inside', 'Folder Name Inside')
-                .addOption('outside', 'Folder Name Outside')
-                .setValue(this.plugin.settings.folderNoteType || 'inside')
-                .onChange((value: string) => {
-                    this.plugin.settings.folderNoteType = value;
-                    this.plugin.saveSettings();
-                    this.display();
-                }));
-
-        if (this.plugin.settings.folderNoteType == 'index') {
-            new Setting(containerEl)
-                .setName('Index File Name')
-                .setDesc('Set the index file name for folder note. (only for the Index method)')
-                .addText(text => text
-                    .setValue(this.plugin.settings.folderNoteName)
-                    .onChange(async (value) => {
-                        // console.log('Secret: ' + value);
-                        this.plugin.settings.folderNoteName = value;
+                    .addOption('index', 'Index file')
+                    .addOption('inside', 'Folder name inside')
+                    .addOption('outside', 'Folder name outside')
+                    .setValue(this.plugin.settings.folderNoteType || 'inside')
+                    .onChange(async (value: string) => {
+                        this.plugin.settings.folderNoteType = value;
                         await this.plugin.saveSettings();
+                        this.display();
                     }));
+
+        if (this.plugin.settings.folderNoteType === 'index') {
+            new Setting(containerEl)
+                .setName('Index file name')
+                .setDesc('Base name used for every folder note. (Index method only.)')
+                .addText((text) =>
+                    text
+                        .setValue(this.plugin.settings.folderNoteName)
+                        .onChange(async (value) => {
+                            this.plugin.settings.folderNoteName = value.trim() || '_about_';
+                            await this.plugin.saveSettings();
+                        }));
         }
 
         new Setting(containerEl)
-            .setName('Inital Content')
-            .setDesc('Set the inital content for new folder note. {{FOLDER_NAME}} will be replaced with current folder name.')
-            .addTextArea(text => {
+            .setName('Initial content')
+            .setDesc('Template for a new folder note. {{FOLDER_NAME}}, {{FOLDER_PATH}}, '
+                + '{{FOLDER_BRIEF}} and {{FOLDER_BRIEF_LIVE}} are substituted.')
+            .addTextArea((text) => {
                 text
                     .setPlaceholder('About the folder.')
                     .setValue(this.plugin.settings.folderNoteStrInit)
                     .onChange(async (value) => {
-                        try {
-                            this.plugin.settings.folderNoteStrInit = value;
-                            await this.plugin.saveSettings();
-                        } catch (e) {
-                            return false;
-                        }
-                    })
+                        this.plugin.settings.folderNoteStrInit = value;
+                        await this.plugin.saveSettings();
+                    });
                 text.inputEl.rows = 8;
                 text.inputEl.cols = 50;
             });
-        
+
         new Setting(containerEl)
-            .setName('Key for New Note')
-            .setDesc('Key + Click a folder to create folder note file. ')
-            .addDropdown(dropDown =>
+            .setName('Key for new note')
+            .setDesc('Hold this key and click a folder to create its note.')
+            .addDropdown((dropDown) =>
                 dropDown
-                .addOption('ctrl', 'Ctrl + Click')
-                .addOption('alt', 'Alt + Click')
-                .setValue(this.plugin.settings.folderNoteKey || 'ctrl')
-                .onChange((value: string) => {
-                    this.plugin.settings.folderNoteKey = value;
-                    this.plugin.saveSettings();
-                }));
-        
+                    .addOption('ctrl', 'Ctrl / Cmd + click')
+                    .addOption('alt', 'Alt + click')
+                    .setValue(this.plugin.settings.folderNoteKey || 'ctrl')
+                    .onChange(async (value: string) => {
+                        this.plugin.settings.folderNoteKey = value;
+                        await this.plugin.saveSettings();
+                    }));
+
         new Setting(containerEl)
-            .setName('Hide Folder Note')
-            .setDesc('Hide the folder note file in the file explorer panel.')
+            .setName('Hide folder note')
+            .setDesc('Hide the folder note file in the file explorer.')
             .addToggle((toggle) => {
                 toggle.setValue(this.plugin.settings.folderNoteHide);
                 toggle.onChange(async (value) => {
@@ -118,11 +111,23 @@ export class FolderNoteSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 });
             });
-        
-        if (this.plugin.settings.folderNoteType != 'index') {
+
+        new Setting(containerEl)
+            .setName('Highlight folders with a note')
+            .setDesc('Tint the name of any folder that has a folder note.')
+            .addToggle((toggle) => {
+                toggle.setValue(this.plugin.settings.folderNoteHighlight);
+                toggle.onChange(async (value) => {
+                    this.plugin.settings.folderNoteHighlight = value;
+                    await this.plugin.saveSettings();
+                });
+            });
+
+        if (this.plugin.settings.folderNoteType !== 'index') {
             new Setting(containerEl)
-                .setName('Auto Rename')
-                .setDesc('Try to automatically rename the folder note if a folder name is changed. (Experimental)')
+                .setName('Auto rename')
+                .setDesc('Keep the folder and its note named the same. Renames go through '
+                    + "Obsidian, so links pointing at the note are updated.")
                 .addToggle((toggle) => {
                     toggle.setValue(this.plugin.settings.folderNoteAutoRename);
                     toggle.onChange(async (value) => {
@@ -131,11 +136,12 @@ export class FolderNoteSettingTab extends PluginSettingTab {
                     });
                 });
         }
-        
-        if (this.plugin.settings.folderNoteType == 'outside') {
+
+        if (this.plugin.settings.folderNoteType === 'outside') {
             new Setting(containerEl)
-                .setName('Delete Folder Note')
-                .setDesc('Try to delete folder note when a folder is deleted. (Dangerous)')
+                .setName('Delete folder note with folder')
+                .setDesc('When a folder is deleted, move its note to trash as well. '
+                    + 'Uses your "Deleted files" preference.')
                 .addToggle((toggle) => {
                     toggle.setValue(this.plugin.settings.folderDelete2Note);
                     toggle.onChange(async (value) => {

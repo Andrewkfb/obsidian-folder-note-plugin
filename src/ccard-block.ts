@@ -1,12 +1,11 @@
-
-import { App, MarkdownView, MarkdownPostProcessorContext} from "obsidian";
+import { App, MarkdownPostProcessorContext } from 'obsidian';
 import { FolderBrief } from './folder-brief';
 import { FolderNote } from './folder-note';
 import { CardBlock } from './card-item';
 import * as Yaml from 'yaml';
 
 // ------------------------------------------------------------
-// ccards processor
+// ccard processor
 // ------------------------------------------------------------
 
 export class ccardProcessor {
@@ -15,82 +14,66 @@ export class ccardProcessor {
     constructor(app: App) {
         this.app = app;
     }
-    
-    async run(source: string, el: HTMLElement, ctx: MarkdownPostProcessorContext, folderNote: FolderNote) {
-        // Change cards code to html element
+
+    async run(
+        source: string,
+        el: HTMLElement,
+        ctx: MarkdownPostProcessorContext,
+        folderNote: FolderNote,
+    ): Promise<void> {
         try {
             const yaml = Yaml.parse(source);
             if (!yaml) return;
 
-            // set default
             if (yaml.type === undefined) yaml.type = 'static';
             if (yaml.style === undefined) yaml.style = 'card';
 
-            // for different types
-            if (yaml.type == 'static') {
-                const docEl = await this.docElemStatic(yaml);
-                if (docEl) {
-                    el.appendChild(docEl);
-                }
+            let docEl: HTMLElement | null = null;
+            if (yaml.type === 'static') {
+                docEl = this.docElemStatic(yaml);
+            } else if (yaml.type === 'folder_brief_live') {
+                docEl = await this.docElemFolderBriefLive(yaml, ctx, folderNote);
             }
-            else if (yaml.type == 'folder_brief_live') {
-                const docEl = await this.docElemFolderBriefLive(yaml, folderNote);
-                if (docEl) {
-                    el.appendChild(docEl);
-                }
-            }
-        }
-        catch (error) {
-            console.log('Code Block: ccard', error)
+
+            if (docEl) el.appendChild(docEl);
+        } catch (error) {
+            console.error('Code Block: ccard', error);
+            el.createEl('pre', { text: `ccard: ${error}` });
         }
     }
 
-    // static
-    async docElemStatic(yaml: any) {
-        if (yaml.items && (yaml.items instanceof Array)) {
-            let cardBlock = new CardBlock();
-            cardBlock.fromYamlCards(yaml);
-            const cardsElem = cardBlock.getDocElement(this.app);
-            return cardsElem;
-        }
-        return null;
+    private docElemStatic(yaml: any): HTMLElement | null {
+        if (!yaml.items || !(yaml.items instanceof Array)) return null;
+        const cardBlock = new CardBlock();
+        cardBlock.fromYamlCards(yaml);
+        return cardBlock.getDocElement(this.app);
     }
 
-    // folder_brief_live
-    async docElemFolderBriefLive(yaml: any, folderNote: FolderNote) {
-        var folderPath = '';
-        const activeFile = this.app.workspace.getActiveFile();
-        var notePath = activeFile.path;
+    private async docElemFolderBriefLive(
+        yaml: any,
+        ctx: MarkdownPostProcessorContext,
+        folderNote: FolderNote,
+    ): Promise<HTMLElement | null> {
+        // ctx.sourcePath is the note the block actually lives in. Using the
+        // *active* file here rendered the wrong folder whenever the block was
+        // drawn in a background pane, a hover preview or an embed.
+        const notePath = ctx.sourcePath;
+        if (!notePath) return null;
+
+        let folderPath: string;
         if (yaml.folder) {
-            let folderExist = await this.app.vault.adapter.exists(yaml.folder);
-            if (folderExist) folderPath = yaml.folder;
+            if (!this.app.vault.getFolderByPath(yaml.folder)) return null;
+            folderPath = yaml.folder;
+        } else {
+            folderPath = folderNote.briefFolderPathForNote(notePath);
         }
-        else {
-            folderPath = await folderNote.getNoteFolderBriefPath(notePath);
-        }
-        
-        if (folderPath.length > 0) {
-            const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-            if (view) {
-                let folderBrief = new FolderBrief(this.app);
 
-                // brief options
-                if (yaml.briefMax) {
-                    folderBrief.briefMax = yaml.briefMax;
-                }
-                if (yaml.noteOnly != undefined) {
-                    folderBrief.noteOnly = yaml.noteOnly;
-                }
+        const folderBrief = new FolderBrief(this.app);
+        if (yaml.briefMax) folderBrief.briefMax = yaml.briefMax;
+        if (yaml.noteOnly !== undefined) folderBrief.noteOnly = yaml.noteOnly;
 
-                // cards options
-                let briefCards = await folderBrief.makeBriefCards(folderPath, notePath);
-                briefCards.fromYamlOptions(yaml);
-                
-                // generate el
-                const ccardElem = briefCards.getDocElement(this.app);
-                return ccardElem;
-            }
-        }
-        return null;
+        const briefCards = await folderBrief.makeBriefCards(folderPath, notePath);
+        briefCards.fromYamlOptions(yaml);
+        return briefCards.getDocElement(this.app);
     }
 }

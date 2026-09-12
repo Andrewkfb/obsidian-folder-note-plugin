@@ -1,150 +1,101 @@
-
-import { App, MarkdownView, TFile, } from "obsidian";
-import { CardStyle, CardBlock, CardItem } from './card-item'
+import { App, TFile, TFolder } from 'obsidian';
+import { CardStyle, CardBlock, CardItem } from './card-item';
 
 // ------------------------------------------------------------
 // Folder Brief
+//
+// Walks the in-memory vault tree rather than hitting the filesystem
+// adapter, so a brief costs no disk I/O and respects the vault index.
 // ------------------------------------------------------------
 
 export class FolderBrief {
     app: App;
-    folderPath: string;
     briefMax: number;
     noteOnly: boolean;
 
     constructor(app: App) {
         this.app = app;
-        this.folderPath = '';
         this.briefMax = 64;
         this.noteOnly = false;
     }
 
-    // for cards type: folder_brief
-    async yamlFolderBrief(yaml: any) {
-        var folderPath = '';
-        const activeFile = this.app.workspace.getActiveFile();
-        var notePath = activeFile.path;
-        if (yaml.cards.folder) {
-            folderPath = yaml.cards.folder;
-            let folderExist = await this.app.vault.adapter.exists(folderPath);
-            if (!folderExist) folderPath = '';
-        }
-        else {
-            folderPath = activeFile.parent.path;
-        }
+    async makeBriefCards(folderPath: string, activeNotePath: string): Promise<CardBlock> {
+        const cardBlock = new CardBlock();
 
-        // generate
-        if (folderPath.length > 0) {
-            const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-            if (view) {
-                let briefCards = await this.makeBriefCards(folderPath, notePath);
-                const cardsElem = briefCards.getDocElement(this.app);
-                return cardsElem;
-            }
-        }
-        return null;
-    }
-    
-    // generate folder overview
-    async makeBriefCards(folderPath: string, activeNotePath: string) {
-        // set note name
-        let cardBlock = new CardBlock();
+        const folder = folderPath
+            ? this.app.vault.getFolderByPath(folderPath)
+            : this.app.vault.getRoot();
+        if (!folder) return cardBlock;
 
-        // children statistic
-        let pathList = await this.app.vault.adapter.list(folderPath);
-        const subFolderList = pathList.folders;
-        const subFileList = pathList.files;
+        const children = [...folder.children].sort((a, b) =>
+            a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
 
-        // sub folders
+        // Sub folders. A folder that has an "outside" note of its own is
+        // represented by that note instead, so skip it here.
         if (!this.noteOnly) {
-            for (var i = 0; i < subFolderList.length; i++) {
-                var subFolderPath = subFolderList[i];
-                // have outside folder note?
-                let noteExists = await this.app.vault.adapter.exists(subFolderPath + '.md');
-                if (!noteExists) {
-                    let folderCard = await this.makeFolderCard(folderPath, subFolderPath);
-                    cardBlock.addCard(folderCard);
-                }
+            for (const child of children) {
+                if (!(child instanceof TFolder)) continue;
+                if (this.app.vault.getFileByPath(`${child.path}.md`)) continue;
+                cardBlock.addCard(this.makeFolderCard(folder.path, child));
             }
         }
 
-        // notes
-        for (var i = 0; i < subFileList.length; i++) {
-            var subFilePath = subFileList[i];
-            if (!subFilePath.endsWith('.md')) continue;
-            if (subFilePath == activeNotePath) continue; // omit self includeing
-            let noteCard = await this.makeNoteCard(folderPath, subFilePath);
-            cardBlock.addCard(noteCard);
+        // Notes.
+        for (const child of children) {
+            if (!(child instanceof TFile) || child.extension !== 'md') continue;
+            if (child.path === activeNotePath) continue; // don't include ourselves
+            cardBlock.addCard(await this.makeNoteCard(folder.path, child));
         }
 
-        // return
         return cardBlock;
     }
 
-    // make folder brief card
-    async makeFolderCard(folderPath: string, subFolderPath: string) {
-        // title
-        var subFolderName = subFolderPath.split('/').pop();
-        let card = new CardItem(subFolderName, CardStyle.Folder);
+    makeFolderCard(folderPath: string, subFolder: TFolder): CardItem {
+        const card = new CardItem(subFolder.name, CardStyle.Folder);
 
-        // description
-        let subPathList = await this.app.vault.adapter.list(subFolderPath);
-        var folderBrief = 'Contains ';
-        folderBrief += subPathList.folders.length.toString() + ' folders, ';
-        folderBrief += subPathList.files.length.toString() + ' notes.';
-        card.setAbstract(folderBrief);
+        let folders = 0;
+        let notes = 0;
+        for (const child of subFolder.children) {
+            if (child instanceof TFolder) folders++;
+            else notes++;
+        }
+        card.setAbstract(`Contains ${folders} folders, ${notes} notes.`);
+        card.setFootnote(this.relativeTo(folderPath, subFolder.path));
 
-        // footnote, use date in the future
-        card.setFootnote(subFolderPath.replace(folderPath + '/', ''));
-        
-        // return
         return card;
     }
 
-    // make note brief card
-    async makeNoteCard(folderPath: string, notePath: string) {
-        // titile
-        var noteName = notePath.split('/').pop();
-        var noteTitle = noteName.substring(0, noteName.length - 3);
-        let card = new CardItem(noteTitle, CardStyle.Note);
-        card.setTitleLink(notePath);
+    async makeNoteCard(folderPath: string, file: TFile): Promise<CardItem> {
+        const card = new CardItem(file.basename, CardStyle.Note);
+        card.setTitleLink(file.path);
 
-        // read content
-        let file = this.app.vault.getAbstractFileByPath(notePath);
-        if (file && file instanceof TFile) {
-            let contentOrg = await this.app.vault.cachedRead(file);
-            // let content = await this.app.vault.adapter.read(notePath);
-            // console.log(content);
+        const contentOrg = await this.app.vault.cachedRead(file);
 
-            // image
-            var imageUrl = this.getContentImage(contentOrg, folderPath);
-            if (imageUrl.length > 0) {
-                card.setHeadImage(imageUrl);
-            }
-            
-            // content?
-            var contentBrief = this.getContentBrief(contentOrg);
-            if (contentBrief.length > 0) {
-                if (contentBrief.length > this.briefMax) {
-                    contentBrief = contentBrief.substring(0, this.briefMax);
-                    contentBrief += '...';
-                }
-                card.setAbstract(contentBrief);
-            }
-
-            // foot note
-            const fileSt = (file as TFile);
-            if (fileSt.stat) {
-                let date = new Date(fileSt.stat.mtime);
-                card.setFootnote(date.toLocaleString());
-            }
-            else {
-                card.setFootnote(notePath.replace(folderPath + '/', ''));
-            }
+        const imageUrl = this.getContentImage(contentOrg, folderPath);
+        if (imageUrl.length > 0) {
+            card.setHeadImage(imageUrl);
         }
 
-        // return
+        let contentBrief = this.getContentBrief(contentOrg);
+        if (contentBrief.length > 0) {
+            if (contentBrief.length > this.briefMax) {
+                contentBrief = contentBrief.substring(0, this.briefMax) + '...';
+            }
+            card.setAbstract(contentBrief);
+        }
+
+        if (file.stat) {
+            card.setFootnote(new Date(file.stat.mtime).toLocaleString());
+        } else {
+            card.setFootnote(this.relativeTo(folderPath, file.path));
+        }
+
         return card;
+    }
+
+    private relativeTo(folderPath: string, childPath: string): string {
+        const prefix = `${folderPath}/`;
+        return childPath.startsWith(prefix) ? childPath.slice(prefix.length) : childPath;
     }
 
     getContentImage(contentOrg: string, folderPath: string) {

@@ -1,12 +1,7 @@
-/* hide the folder note file node  */
-div.is-folder-note {
-    display: none;
-}
-
-/* indicate the folder has note  */
-div.has-folder-note {
-    color: var(--text-nav-selected);
-}
+/* Explorer decoration (hiding folder notes, tinting folders that have one)
+   is generated at runtime into a <style> element keyed on data-path, so that
+   it survives the virtualised file explorer. See src/explorer-decor.ts.
+   The old rules here relied on --text-nav-selected, which Obsidian removed. */
 
 /*---------------------------------------------
             Cute card view

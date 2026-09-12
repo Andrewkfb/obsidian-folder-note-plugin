@@ -1,142 +1,166 @@
-import {
-    Plugin,
-    MarkdownView
-} from 'obsidian';
+import { Editor, MarkdownView, Notice, Plugin, TAbstractFile, TFile, TFolder } from 'obsidian';
 
-import * as Yaml from 'yaml';
 import { FolderBrief } from './folder-brief';
 import { FolderNote } from './folder-note';
+import { ExplorerDecor } from './explorer-decor';
 import { ccardProcessor } from './ccard-block';
 
-import { 
-    FolderNotePluginSettings, 
-    FOLDER_NOTE_DEFAULT_SETTINGS, 
-    FolderNoteSettingTab 
+import {
+    FolderNotePluginSettings,
+    FOLDER_NOTE_DEFAULT_SETTINGS,
+    FolderNoteSettingTab,
 } from './settings';
 
 // ------------------------------------------------------------
 // FolderNotePlugin
 // ------------------------------------------------------------
 
-enum NoteFileMethod {
-    Index, Inside, Outside,
-}
-
 export default class FolderNotePlugin extends Plugin {
     settings: FolderNotePluginSettings;
     folderNote: FolderNote;
+    decor: ExplorerDecor;
 
     async onload() {
-        console.log('Loading Folder Note plugin.');
-
-        // load settings
         await this.loadSettings();
-        
-        // for ccard rendering
+
         this.registerMarkdownCodeBlockProcessor('ccard', async (source, el, ctx) => {
-            // run processer
-            let proc = new ccardProcessor(this.app);
+            const proc = new ccardProcessor(this.app);
             await proc.run(source, el, ctx, this.folderNote);
         });
 
-        // for rename event
-        this.registerEvent(this.app.vault.on('rename', 
-            (newPath, oldPath) => this.handleFileRename(newPath, oldPath)));
+        this.registerEvent(this.app.vault.on('rename', (file, oldPath) =>
+            this.handleRename(file, oldPath)));
+        this.registerEvent(this.app.vault.on('delete', (file) =>
+            this.handleDelete(file)));
+        this.registerEvent(this.app.vault.on('create', () => this.decor.refresh()));
 
-        // for remove folder
-        this.registerEvent(this.app.vault.on('delete', 
-            (file) => this.handleFileDelete(file) ));
-
-        // for settings
         this.addSettingTab(new FolderNoteSettingTab(this.app, this));
 
-        // for file explorer click
-        this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-            // get the folder path
-            const elemTarget = (evt.target as Element);
-            var folderElem = this.folderNote.setByFolderElement(elemTarget);
-
-            // open the infor note
-            if (this.folderNote.folderPath.length > 0) {
-                // any key?
-                var newKey = false;
-                if (this.settings.folderNoteKey == 'ctrl') {
-                    newKey = (evt.ctrlKey || evt.metaKey);
-                }
-                else if (this.settings.folderNoteKey == 'alt') {
-                    newKey = evt.altKey;
-                }
-
-                // open it
-                this.folderNote.openFolderNote(folderElem, newKey);
-            }
-        });
+        this.registerDomEvent(document, 'click', (evt: MouseEvent) => this.handleClick(evt));
 
         this.addCommand({
             id: 'insert-folder-brief',
-            name: 'Insert Folder Brief',
-            callback: async () => {
-                const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-                if (view) {
-                    const editor = view.sourceMode.cmEditor;
-                    const activeFile = this.app.workspace.getActiveFile();
-                    // generate brief
-                    let folderBrief = new FolderBrief(this.app);
-                    let folderPath = await this.folderNote.getNoteFolderBriefPath(activeFile.path);
-                    let briefCards = await folderBrief.makeBriefCards(folderPath, activeFile.path);
-                    editor.replaceSelection(briefCards.getYamlCode(), "end");
-                }
+            name: 'Insert folder brief',
+            editorCallback: async (editor: Editor, view: MarkdownView) => {
+                const activeFile = view.file;
+                if (!activeFile) return;
+                const folderPath = this.folderNote.briefFolderPathForNote(activeFile.path);
+                const folderBrief = new FolderBrief(this.app);
+                const briefCards = await folderBrief.makeBriefCards(folderPath, activeFile.path);
+                editor.replaceSelection(briefCards.getYamlCode());
             },
-            hotkeys: []
         });
 
         this.addCommand({
             id: 'note-to-folder',
-            name: 'Make Current Note to Folder',
-            callback: async () => {
-                const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-                if (view) {
-                    const activeFile = this.app.workspace.getActiveFile();
-                    this.folderNote.setByNotePath(activeFile.path);
-                    await this.folderNote.newNoteFolder();
-                }
+            name: 'Make current note into a folder',
+            checkCallback: (checking: boolean) => {
+                const file = this.app.workspace.getActiveFile();
+                if (!file || file.extension !== 'md') return false;
+                if (!checking) void this.folderNote.makeNoteIntoFolder(file);
+                return true;
             },
-            hotkeys: []
         });
+
+        // The explorer decoration needs the vault index, which is only complete
+        // once the layout is ready.
+        this.app.workspace.onLayoutReady(() => this.decor.load());
     }
 
     onunload() {
-        console.log('Unloading Folder Note plugin');
+        this.decor?.unload();
     }
 
-    updateFolderNote() {
-        this.folderNote = new FolderNote(
-            this.app, 
-            this.settings.folderNoteType, 
-            this.settings.folderNoteName);
-        this.folderNote.initContent = this.settings.folderNoteStrInit;
-        this.folderNote.hideNoteFile = this.settings.folderNoteHide;
+    // --------------------------------------------------------
+    // File explorer clicks
+    // --------------------------------------------------------
+
+    private handleClick(evt: MouseEvent) {
+        const target = evt.target as Element | null;
+        if (!target || typeof target.closest !== 'function') return;
+
+        // Clicking the fold arrow should only fold.
+        if (target.closest('.collapse-icon')) return;
+
+        const titleEl = target.closest('.nav-folder-title');
+        if (!titleEl) return;
+
+        const folderPath = titleEl.getAttribute('data-path');
+        if (!folderPath) return;
+
+        const folder = this.app.vault.getFolderByPath(folderPath);
+        if (!folder) return;
+
+        let createIfMissing = false;
+        if (this.settings.folderNoteKey === 'ctrl') {
+            createIfMissing = evt.ctrlKey || evt.metaKey;
+        } else if (this.settings.folderNoteKey === 'alt') {
+            createIfMissing = evt.altKey;
+        }
+
+        void this.openFolderNote(folder, createIfMissing);
     }
+
+    async openFolderNote(folder: TFolder, createIfMissing: boolean) {
+        let note = this.folderNote.getFolderNote(folder);
+
+        if (!note && createIfMissing) {
+            note = await this.folderNote.createFolderNote(folder);
+            this.decor.refresh();
+        }
+        if (!note) return;
+
+        await this.app.workspace.getLeaf(false).openFile(note);
+    }
+
+    // --------------------------------------------------------
+    // Vault events
+    // --------------------------------------------------------
+
+    private async handleRename(file: TAbstractFile, oldPath: string) {
+        if (this.settings.folderNoteAutoRename) {
+            await this.folderNote.syncRename(file, oldPath);
+        }
+        this.decor.refresh();
+    }
+
+    private async handleDelete(file: TAbstractFile) {
+        if (this.settings.folderDelete2Note) {
+            await this.folderNote.syncDelete(file);
+        }
+        this.decor.refresh();
+    }
+
+    // --------------------------------------------------------
+    // Settings
+    // --------------------------------------------------------
 
     async loadSettings() {
-        this.settings = Object.assign(FOLDER_NOTE_DEFAULT_SETTINGS, await this.loadData());
-        this.updateFolderNote();
+        // Object.assign into a fresh object -- assigning into the defaults
+        // constant would let saved values leak into "restore defaults".
+        this.settings = Object.assign({}, FOLDER_NOTE_DEFAULT_SETTINGS, await this.loadData());
+        this.applySettings();
     }
 
     async saveSettings() {
         await this.saveData(this.settings);
-        this.updateFolderNote();
+        this.applySettings();
+        this.decor?.refresh();
     }
 
-    // keep notefile name to be the folder name
-    async handleFileRename(newPath: any, oldPath: any) {
-        if (!this.settings.folderNoteAutoRename) return;
-        this.folderNote.syncName(newPath, oldPath);
-    }
+    applySettings() {
+        this.folderNote = new FolderNote(
+            this.app,
+            this.settings.folderNoteType,
+            this.settings.folderNoteName);
+        this.folderNote.initContent = this.settings.folderNoteStrInit;
 
-    // delete folder
-    async handleFileDelete(pathToDel: any) {
-        if (!this.settings.folderDelete2Note) return;
-        this.folderNote.deleteFolder(pathToDel.path);
+        if (!this.decor) {
+            this.decor = new ExplorerDecor(this.app, this.folderNote);
+        } else {
+            this.decor.folderNote = this.folderNote;
+        }
+        this.decor.hideNotes = this.settings.folderNoteHide;
+        this.decor.markFolders = this.settings.folderNoteHighlight;
     }
 }

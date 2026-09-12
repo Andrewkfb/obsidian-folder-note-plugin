@@ -1,3 +1,42 @@
+# Folder Note — modernised fork
+
+Fork of [xpgo/obsidian-folder-note-plugin](https://github.com/xpgo/obsidian-folder-note-plugin),
+whose last release was 0.7.3 in February 2021 and targeted Obsidian 0.10.13.
+This fork brings it up to the current API (tested against Obsidian 1.13.7) and
+fixes the defects listed below. Plugin id, settings keys and `ccard` syntax are
+unchanged, so it is a drop-in replacement that keeps your existing configuration.
+
+## What was fixed
+
+| | Was | Now |
+|---|---|---|
+| **Renames broke links** | `vault.adapter.rename()` moved files behind Obsidian's back, so wikilinks pointing at a renamed folder note were never updated, and renaming a folder note renamed its whole folder via a raw filesystem call. | `fileManager.renameFile()`, which is what updates links. Renames onto an existing path are refused with a notice instead of being attempted. |
+| **Renames were a race** | A `setTimeout(..., 1000)` queue that read only the first pair of paths and then cleared the whole array, silently dropping any rename queued in the same second. | Direct, awaited renames. Re-entrancy is handled by a guard plus logic that converges, so the events our own rename emits are no-ops. |
+| **Deletes ignored your preference** | `adapter.trashLocal()` always used the vault-local `.trash`. | `fileManager.trashFile()`, which honours the *Deleted files* setting. |
+| **Folder highlight did nothing** | `color: var(--text-nav-selected)` — a variable Obsidian removed years ago. | `var(--text-accent)`, and a setting to turn it off. |
+| **Hiding was lazy and fell off** | Classes were poked onto rows only when you clicked a folder. The file explorer in Obsidian 1.x is virtualised, so those rows get recycled and the classes vanish. | One generated stylesheet keyed on `data-path`, rebuilt on vault changes. Applies at load, to every folder, and survives scrolling and folding. |
+| **"Insert Folder Brief" used a removed API** | `view.sourceMode.cmEditor` (CodeMirror 5). Still works today only because Obsidian keeps a compatibility shim. | `editorCallback`, which hands you the current `Editor`. |
+| **`ccard` rendered the wrong folder** | `folder_brief_live` read `workspace.getActiveFile()`, so a block drawn in a background pane, hover preview or embed described whichever note happened to be focused. | Uses `ctx.sourcePath` — the note the block actually lives in. |
+| **Settings defaults were mutated** | `Object.assign(DEFAULT_SETTINGS, ...)` wrote saved values into the defaults constant. | Assigns into a fresh object. |
+| **Briefs hit the disk** | `adapter.list()` per folder, plus one per subfolder, on every render. | Walks the in-memory vault tree. No disk I/O. |
+| **Clicks were fragile** | Matched on `className.toString()`, which is `[object SVGAnimatedString]` for SVG targets. | `closest('.nav-folder-title')`, with the fold arrow excluded so it still only folds. |
+
+Build tooling moved from Rollup 2 to esbuild, TypeScript 4.1 to 5.7, and the
+bundle dropped from 286 KB to 118 KB. `strictNullChecks` is on and clean.
+
+## Build and test
+
+```
+npm install
+npm run build     # typecheck + bundle to main.js
+npm test          # 21 checks over rename sync and explorer decoration
+```
+
+The test suite drives `FolderNote` against an in-memory vault stub and feeds
+rename events back in, exactly as Obsidian does, across all three note methods.
+
+---
+
 # Folder Note Plugin
 
 Obsidian Plugin: Add description note to a folder. Generate card-style overview of folder. Make your vault to be a hierarchy note system.
