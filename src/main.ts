@@ -1,4 +1,4 @@
-import { Editor, MarkdownView, Notice, Plugin, TAbstractFile, TFile, TFolder } from 'obsidian';
+import { Editor, MarkdownView, Menu, Notice, Plugin, TAbstractFile, TFile, TFolder } from 'obsidian';
 
 import { FolderBrief } from './folder-brief';
 import { FolderNote } from './folder-note';
@@ -38,6 +38,13 @@ export default class FolderNotePlugin extends Plugin {
 
         this.registerDomEvent(document, 'click', (evt: MouseEvent) => this.handleClick(evt));
 
+        // The file explorer's folder menu: right-click on desktop, long-press on
+        // mobile. The modifier-key gesture in handleClick() has no touch
+        // equivalent, so this is the only route to creating a folder note on a
+        // phone. Registered on both platforms so the two behave alike.
+        this.registerEvent(this.app.workspace.on('file-menu', (menu, file) =>
+            this.addFolderMenuItem(menu, file)));
+
         this.addCommand({
             id: 'insert-folder-brief',
             name: 'Insert folder brief',
@@ -58,6 +65,17 @@ export default class FolderNotePlugin extends Plugin {
                 const file = this.app.workspace.getActiveFile();
                 if (!file || file.extension !== 'md') return false;
                 if (!checking) void this.folderNote.makeNoteIntoFolder(file);
+                return true;
+            },
+        });
+
+        this.addCommand({
+            id: 'open-folder-note',
+            name: 'Open or create folder note for the current folder',
+            checkCallback: (checking: boolean) => {
+                const folder = this.app.workspace.getActiveFile()?.parent;
+                if (!folder) return false;
+                if (!checking) void this.openFolderNote(folder, true);
                 return true;
             },
         });
@@ -111,6 +129,28 @@ export default class FolderNotePlugin extends Plugin {
         if (!note) return;
 
         await this.app.workspace.getLeaf(false).openFile(note);
+    }
+
+    // --------------------------------------------------------
+    // Folder context menu
+    // --------------------------------------------------------
+
+    /**
+     * Adds an open-or-create item to a folder's context menu.
+     *
+     * Creation is offered unconditionally: unlike the click gesture, choosing
+     * this item is already a deliberate act, so there is no modifier to stand
+     * in for intent.
+     */
+    private addFolderMenuItem(menu: Menu, file: TAbstractFile) {
+        if (!(file instanceof TFolder)) return;
+
+        const existing = this.folderNote.getFolderNote(file);
+        menu.addItem((item) => {
+            item.setTitle(existing ? 'Open folder note' : 'Create folder note')
+                .setIcon('file-text')
+                .onClick(() => void this.openFolderNote(file, true));
+        });
     }
 
     // --------------------------------------------------------
